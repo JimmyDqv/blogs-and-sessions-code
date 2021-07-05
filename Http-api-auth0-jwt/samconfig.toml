@@ -1,0 +1,10 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "http-api-auth0-jwt"
+s3_bucket = "YOUR BUCKET NAME HERE"
+s3_prefix = "http-api-auth0-jwt"
+region = "YOUR REGION HERE"
+capabilities = "CAPABILITY_NAMED_IAM"
+parameter_overrides = "Application=\"YOUR APP NAME HERE\""

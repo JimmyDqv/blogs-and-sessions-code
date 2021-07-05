@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Create a HTTP API with JWT Authorizer.
+
+Parameters:
+  Application:
+    Type: String
+    Description: Name of the Application owning this Stack Resources
+
+Globals:
+  Function:
+    Timeout: 5
+    Runtime: python3.8
+
+Resources:
+  UnicornAPI:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Auth:
+        DefaultAuthorizer: Auth0Authorizer
+        Authorizers:
+          Auth0Authorizer:
+            IdentitySource: "$request.header.Authorization"
+            JwtConfiguration:
+              issuer: "YOUR ISSUER HERE"
+              audience:
+                - "YOUR AUDIENCE HERE"
+
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - "*"
+      Tags:
+        Application: !Ref Application
+
+  ListAllUnicornsLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: list-all-unicorns.lambda_handler
+      Events:
+        UnicornsGet:
+          Type: HttpApi
+          Properties:
+            Path: /unicorns
+            Method: get
+            ApiId: !Ref UnicornAPI
+            Auth:
+              AuthorizationScopes:
+                - list:unicorns
+              Authorizer: Auth0Authorizer
+
+  GetUnicornsambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: get-unicorn.lambda_handler
+      Events:
+        UnicornGet:
+          Type: HttpApi
+          Properties:
+            Path: /unicorn
+            Method: get
+            ApiId: !Ref UnicornAPI
+            Auth:
+              AuthorizationScopes:
+                - read:unicorn
+              Authorizer: Auth0Authorizer
