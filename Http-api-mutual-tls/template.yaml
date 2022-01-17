@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Create a HTTP API with Mutual TLS.
+
+Parameters:
+  Application:
+    Type: String
+    Description: Name of the Application owning this Stack Resources
+  DomainName:
+    Type: String
+    Description: The domain name for the API
+  HostedZoneId:
+    Type: String
+    Description: The zone ID for the hosted zone in Route53 for the DomainName
+  TruststoreUri:
+    Type: String
+    Description: "An Amazon S3 URL that specifies the truststore for mutual TLS authentication"
+    Default: "s3://mutual-tls-trust-store/certificate.pem"
+
+Globals:
+  Function:
+    Timeout: 5
+    Runtime: python3.8
+
+Resources:
+  ACMCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: !Ref DomainName
+
+  HelloWorldAPI:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DisableExecuteApiEndpoint: true
+      Domain:
+        CertificateArn: !Ref ACMCertificate
+        DomainName: !Ref DomainName
+        EndpointConfiguration: REGIONAL
+        MutualTlsAuthentication:
+          TruststoreUri: !Ref TruststoreUri
+        Route53:
+          HostedZoneId: !Ref HostedZoneId
+          EvaluateTargetHealth: false
+        SecurityPolicy: TLS_1_2.
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - "*"
+      Tags:
+        Application: !Ref Application
+
+  HelloWorldFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: hello-world.lambda_handler
+      Events:
+        UnicornsGet:
+          Type: HttpApi
+          Properties:
+            Path: /hello-world
+            Method: get
+            ApiId: !Ref HelloWorldAPI
