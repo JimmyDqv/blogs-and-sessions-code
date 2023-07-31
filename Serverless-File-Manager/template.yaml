@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless File Manager
+
+Parameters:
+  Application:
+    Type: String
+    Description: Name of Application / Service that own the resources
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 2048
+    Runtime: python3.7
+
+Resources:
+  ##########################################################################
+  #  EventBus
+  ##########################################################################
+  EventBridge:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub ${Application}-eventbus
+
+  ##########################################################################
+  #  File resources
+  ##########################################################################
+  FileBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: True
+      BucketName: !Sub ${Application}-files
+
+  InventoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${Application}-file-inventory
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  ##########################################################################
+  # HTTP API
+  ##########################################################################
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefinitionBody:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: ./api.yaml
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ApiDirectWriteEventBridge
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              Action:
+                - events:PutEvents
+              Effect: Allow
+              Resource:
+                - !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${EventBridge}
+
+  ##########################################################################
+  #  HTTP API Operations
+  ##########################################################################
+  CreateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: Api/Create
+      Handler: create.handler
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref FileBucket
+        - DynamoDBReadPolicy:
+            TableName: !Ref InventoryTable
+      Environment:
+        Variables:
+          BUCKET: !Ref FileBucket
+      Events:
+        Create:
+          Type: HttpApi
+          Properties:
+            Path: /files/create
+            Method: post
+            ApiId: !Ref HttpApi
+
+  FetchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: Api/Fetch
+      Handler: fetch.handler
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref FileBucket
+      Environment:
+        Variables:
+          BUCKET: !Ref FileBucket
+          INVENTORY_TABLE: !Ref InventoryTable
+      Events:
+        Fetch:
+          Type: HttpApi
+          Properties:
+            Path: /files/fetch
+            Method: post
+            ApiId: !Ref HttpApi
+
+  ListFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: Api/List
+      Handler: list.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref InventoryTable
+      Environment:
+        Variables:
+          INVENTORY_TABLE: !Ref InventoryTable
+      Events:
+        Fetch:
+          Type: HttpApi
+          Properties:
+            Path: /files/list
+            Method: post
+            ApiId: !Ref HttpApi
+
+  GetQuotaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: Api/Quota
+      Handler: get.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref InventoryTable
+      Environment:
+        Variables:
+          INVENTORY_TABLE: !Ref InventoryTable
+      Events:
+        Fetch:
+          Type: HttpApi
+          Properties:
+            Path: /quota/get
+            Method: get
+            ApiId: !Ref HttpApi
+
+  ##########################################################################
+  #  HTTP API Auth Lambda                                                  #
+  ##########################################################################
+  AuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: Auth
+      Handler: auth.handler
+      Environment:
+        Variables:
+          SECRET: !Ref SimpleSecret
+
+  InvokeAuthFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeAuthLambda
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              Action:
+                - lambda:InvokeFunction
+              Effect: Allow
+              Resource:
+                - !GetAtt AuthFunction.Arn
+
+  ##########################################################################
+  #  Event-driven functions
+  ##########################################################################
+
+  UpdateInventoryStateMachineStandard:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: UpdateInventory/StateMachine/updateinventory.asl.yaml
+      Tracing:
+        Enabled: true
+      DefinitionSubstitutions:
+        InventoryTable: !Ref InventoryTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:*
+              Resource: *
+        - S3CrudPolicy:
+            BucketName: !Ref FileBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref InventoryTable
+      Events:
+        UpdateInventoryEvent:
+          Type: EventBridgeRule
+          Properties:
+            InputPath: $.detail
+            Pattern:
+              source:
+                - aws.s3
+              detail-type:
+                - Object Created
+                - Object Deleted
+
+  DeleteStateMachineStandard:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: Events/Delete/StateMachine/delete.asl.yaml
+      Tracing:
+        Enabled: true
+      DefinitionSubstitutions:
+        InventoryTable: !Ref InventoryTable
+        FileBucket: !Ref FileBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:*
+              Resource: *
+        - S3CrudPolicy:
+            BucketName: !Ref FileBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref InventoryTable
+      Events:
+        Delete:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref EventBridge
+            InputPath: $.detail
+            Pattern:
+              source:
+                - FileApi
+              detail-type:
+                - DeleteFile

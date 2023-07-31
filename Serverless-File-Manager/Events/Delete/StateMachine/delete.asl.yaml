@@ -1,0 +1,71 @@
+Comment: Delete File
+StartAt: Get Path Length
+States:
+    Get Path Length:
+        Type: Pass
+        Parameters:
+            user.$: $.user
+            path.$: $.path
+            name.$: $.name
+            length.$: States.ArrayLength(States.StringSplit($.path,'/'))
+        Next: Does path need an update?
+    Does path need an update?:
+        Type: Choice
+        Choices:
+            - And:
+                  - Not:
+                        Variable: $.path
+                        StringMatches: "*/"
+                  - Variable: $.length
+                    NumericGreaterThan: 0
+              Next: Update Path
+        Default: Create Full Path
+    Update Path:
+        Type: Pass
+        Parameters:
+            user.$: $.user
+            path.$: States.Format('{}/',$.path)
+            name.$: $.name
+        Next: Create Full Path
+    Create Full Path:
+        Type: Pass
+        Parameters:
+            User.$: $.user
+            Path.$: $.path
+            Name.$: $.name
+            FullPath.$: States.Format('{}/{}{}',$.user,$.path,$.name)
+        Next: Find Item
+    Find Item:
+        Type: Task
+        Next: File Exists?
+        Parameters:
+            TableName: ${InventoryTable}
+            KeyConditionExpression: PK = :pk AND SK = :sk
+            ExpressionAttributeValues:
+                ":pk":
+                    S.$: $.User
+                ":sk":
+                    S.$: $.FullPath
+        ResultPath: $.ItemQueryResult
+        Resource: arn:aws:states:::aws-sdk:dynamodb:query
+    File Exists?:
+        Type: Choice
+        Choices:
+            - Variable: $.ItemQueryResult.Count
+              NumericGreaterThan: 0
+              Comment: Delete File
+              Next: DeleteObject
+        Default: File Not Found
+    DeleteObject:
+        Type: Task
+        Parameters:
+            Bucket: ${FileBucket}
+            Key.$: $.FullPath
+        Resource: arn:aws:states:::aws-sdk:s3:deleteObject
+        Next: The End
+    File Not Found:
+        Type: Pass
+        Next: The End
+    The End:
+        Type: Pass
+        End: true

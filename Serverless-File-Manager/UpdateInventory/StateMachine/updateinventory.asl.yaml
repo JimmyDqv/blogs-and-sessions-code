@@ -1,0 +1,205 @@
+Comment: Update File Inventory
+StartAt: Operation
+States:
+    Operation:
+        Type: Choice
+        Choices:
+            - Variable: $.reason
+              StringEquals: PutObject
+              Next: Put Flow
+              Comment: PutObject
+            - Variable: $.reason
+              StringEquals: DeleteObject
+              Next: Delete Flow
+              Comment: DeleteObject
+        Default: Unknown Operation
+    Put Flow:
+        Type: Pass
+        Parameters:
+            User.$: States.ArrayGetItem(States.StringSplit($.object.key,'/'),0)
+            Bucket.$: $.bucket.name
+            Path.$: $.object.key
+            Size.$: $.object.size
+            Etag.$: $.object.etag
+            Reason.$: $.reason
+        ResultPath: $
+        Next: Find Item
+    Find Item:
+        Type: Task
+        Next: What to do?
+        Parameters:
+            TableName: ${InventoryTable}
+            KeyConditionExpression: PK = :pk AND SK = :sk
+            ExpressionAttributeValues:
+                ":pk":
+                    S.$: $.User
+                ":sk":
+                    S.$: $.Path
+        ResultPath: $.ItemQueryResult
+        Resource: arn:aws:states:::aws-sdk:dynamodb:query
+    What to do?:
+        Type: Choice
+        Choices:
+            - And:
+                  - Variable: $.ItemQueryResult.Count
+                    NumericGreaterThan: 0
+                  - Not:
+                        Variable: $.Reason
+                        StringMatches: DeleteObject
+              Comment: Update File
+              Next: Update Object Flow
+            - And:
+                  - Variable: $.ItemQueryResult.Count
+                    NumericLessThanEquals: 0
+                  - Not:
+                        Variable: $.Reason
+                        StringMatches: DeleteObject
+              Next: New Object Flow
+              Comment: New File
+            - And:
+                  - Variable: $.Reason
+                    StringMatches: DeleteObject
+                  - Variable: $.ItemQueryResult.Count
+                    NumericGreaterThan: 0
+              Next: Delete Object Flow
+              Comment: Delete File
+        Default: Unknown Operation
+    Delete Object Flow:
+        Type: Pass
+        Parameters:
+            User.$: $.User
+            Bucket.$: $.Bucket
+            Path.$: $.Path
+            Reason.$: $.Reason
+            DeletionType.$: $.DeletionType
+            Count.$: $.ItemQueryResult.Count
+            OldItemSize.$: $.ItemQueryResult.Items[0].Size.N
+            OldItemEtag.$: $.ItemQueryResult.Items[0].Etag.S
+            OldItemUser.$: $.ItemQueryResult.Items[0].User.S
+            OldItemPath.$: $.ItemQueryResult.Items[0].Path.S
+            OldItemBucket.$: $.ItemQueryResult.Items[0].Bucket.S
+        ResultPath: $
+        Next: Set Delete File Diff
+    Set Delete File Diff:
+        Type: Pass
+        Parameters:
+            Size.$: States.Format('-{}',$.OldItemSize)
+        ResultPath: $.Diff
+        Next: Delete Item
+    Delete Item:
+        Type: Task
+        Resource: arn:aws:states:::dynamodb:deleteItem
+        Parameters:
+            TableName: ${InventoryTable}
+            Key:
+                PK:
+                    S.$: $.User
+                SK:
+                    S.$: $.Path
+        ResultPath: null
+        Next: Update User Quota
+    Update Object Flow:
+        Type: Pass
+        Parameters:
+            User.$: $.User
+            Bucket.$: $.Bucket
+            Path.$: $.Path
+            Size.$: $.Size
+            Etag.$: $.Etag
+            Reason.$: $.Reason
+            Count.$: $.ItemQueryResult.Count
+            OldItemSize.$: $.ItemQueryResult.Items[0].Size.N
+            OldItemEtag.$: $.ItemQueryResult.Items[0].Etag.S
+            OldItemUser.$: $.ItemQueryResult.Items[0].User.S
+            OldItemPath.$: $.ItemQueryResult.Items[0].Path.S
+            OldItemBucket.$: $.ItemQueryResult.Items[0].Bucket.S
+        ResultPath: $
+        Next: Calculate Update File Diff
+    Calculate Update File Diff:
+        Type: Pass
+        Parameters:
+            Size.$: >-
+                States.MathAdd(States.StringToJson(States.Format('{}',$.Size)),
+                States.StringToJson(States.Format('-{}', $.OldItemSize)))
+        ResultPath: $.Diff
+        Next: Update Item
+    Update Item:
+        Type: Task
+        Resource: arn:aws:states:::dynamodb:updateItem
+        Parameters:
+            TableName: ${InventoryTable}
+            Key:
+                PK:
+                    S.$: $.User
+                SK:
+                    S.$: $.Path
+            UpdateExpression: SET Size = :size, Etag = :etag
+            ExpressionAttributeValues:
+                ":size":
+                    N.$: States.Format('{}', $.Size)
+                ":etag":
+                    S.$: $.Etag
+        ResultPath: null
+        Next: Update User Quota
+    Update User Quota:
+        Type: Task
+        Resource: arn:aws:states:::dynamodb:updateItem
+        ResultPath: null
+        Parameters:
+            TableName: ${InventoryTable}
+            Key:
+                PK:
+                    S.$: $.User
+                SK:
+                    S: Quota
+            UpdateExpression: ADD TotalSize :size
+            ExpressionAttributeValues:
+                ":size":
+                    N.$: States.Format('{}', $.Diff.Size)
+        End: true
+    Unknown Operation:
+        Type: Pass
+        Next: The End
+    Delete Flow:
+        Type: Pass
+        Parameters:
+            User.$: States.ArrayGetItem(States.StringSplit($.object.key,'/'),0)
+            Bucket.$: $.bucket.name
+            Path.$: $.object.key
+            Reason.$: $.reason
+            DeletionType: $.deletion-type
+        Next: Find Item
+    The End:
+        Type: Pass
+        End: true
+    New Object Flow:
+        Type: Pass
+        Next: Set Add File Diff
+    Set Add File Diff:
+        Type: Pass
+        Parameters:
+            Size.$: $.Size
+        ResultPath: $.Diff
+        Next: Add New Item
+    Add New Item:
+        Type: Task
+        Resource: arn:aws:states:::dynamodb:putItem
+        Parameters:
+            TableName: ${InventoryTable}
+            Item:
+                PK:
+                    S.$: $.User
+                SK:
+                    S.$: $.Path
+                User:
+                    S.$: $.User
+                Path:
+                    S.$: $.Path
+                Bucket:
+                    S.$: $.Bucket
+                Size:
+                    N.$: States.Format('{}',$.Size)
+                Etag:
+                    S.$: $.Etag
+        ResultPath: null
+        Next: Update User Quota

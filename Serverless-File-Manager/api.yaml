@@ -1,0 +1,23 @@
+openapi: 3.0.1
+info:
+  title: File Management API
+paths:
+  /files/delete:
+    post:
+      responses:
+        default:
+          description: Send delete command to EventBridge
+      x-amazon-apigateway-integration:
+        integrationSubtype: EventBridge-PutEvents
+        credentials:
+          Fn::GetAtt: [ApiRole, Arn]
+        requestParameters:
+          Detail: $request.body
+          DetailType: DeleteFile
+          Source: FileApi
+          EventBusName:
+            Fn::GetAtt: [EventBridge, Name]
+        payloadFormatVersion: 1.0
+        type: aws_proxy
+        connectionType: INTERNET
+x-amazon-apigateway-importexport-version: 1.0

@@ -1,0 +1,9 @@
+version=0.1
+[default.deploy.parameters]
+stack_name = "serverless-file-manager"
+s3_bucket = "<your-bucket>"
+s3_prefix = "serverless-file-manager"
+region = "eu-west-1"
+confirm_changeset = false
+capabilities = "CAPABILITY_NAMED_IAM"
+parameter_overrides = "Application=\"serverless-file-manager\""
